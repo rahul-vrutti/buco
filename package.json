@@ -1,0 +1,32 @@
+{
+  "name": "buco-package-manager",
+  "version": "3.0.1",
+  "description": "Full-stack package version management system with Docker integration",
+  "scripts": {
+    "start": "concurrently \"npm run start:backend\" \"npm run start:frontend\"",
+    "start:backend": "cd backend && npm start",
+    "start:frontend": "cd frontend && npm start",
+    "install:all": "npm install && cd backend && npm install && cd ../frontend && npm install"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.0"
+  },
+  "keywords": [
+    "package-management",
+    "docker",
+    "react",
+    "nodejs",
+    "version-control",
+    "microservices"
+  ],
+  "author": "Buco Team",
+  "license": "MIT",
+  "subcoVersion": "2.2.0",
+  "lastUpdated": "2025-09-12T07:19:28.813Z",
+  "serviceVersions": {
+    "buco": "1.1.0",
+    "subco": "2.2.0",
+    "mqtt": "3.3.0",
+    "dhcp": "4.4.0"
+  }
+}
