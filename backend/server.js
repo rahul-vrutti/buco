@@ -54,7 +54,7 @@ mqttClient.on('error', (error) => {
 // Middleware
 app.use(cors());
 app.use(express.json());
-app.use(express.static(path.join(__dirname, '../build/front')));
+app.use(express.static(path.join(__dirname, './front')));
 
 // Configure multer for file uploads
 const storage = multer.diskStorage({
@@ -509,7 +509,7 @@ app.get('/api/health', (req, res) => {
 
 // Serve React frontend for all non-API routes (must be last)
 app.get('*', (req, res) => {
-    res.sendFile(path.join(__dirname, '../build/front', 'index.html'));
+    res.sendFile(path.join(__dirname, './front', 'index.html'));
 });
 
 app.listen(PORT, () => {

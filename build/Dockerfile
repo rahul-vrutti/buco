@@ -33,8 +33,9 @@ ENV MQTT_BROKER_URL=mqtt://host.docker.internal:1883
 RUN addgroup -g 1001 -S nodejs
 RUN adduser -S buco -u 1001
 
-# Change ownership of the app directory
+# Change ownership of the app directory and front directory
 RUN chown -R buco:nodejs /app
+RUN chown -R buco:nodejs /app/front
 RUN chown -R buco:nodejs /uploads 2>/dev/null || true
 
 # Switch to non-root user
