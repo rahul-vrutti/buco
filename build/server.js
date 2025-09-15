@@ -12,44 +12,98 @@ const PORT = process.env.PORT || 5000;
 const docker = new Docker();
 
 // MQTT client setup
-const brokerUrl = process.env.MQTT_BROKER_URL || 'mqtt://host.docker.internal:1883';
+const brokerUrl = process.env.MQTT_BROKER_URL || 'mqtt://localhost:1883';
 console.log('brokerUrl: ', brokerUrl);
-const mqttClient = mqtt.connect(brokerUrl);
+console.log('Attempting to connect to MQTT broker...');
+
+const mqttClient = mqtt.connect(brokerUrl, {
+    connectTimeout: 30 * 1000, // 30 seconds
+    reconnectPeriod: 5000, // 5 seconds
+    clean: true,
+    keepalive: 60
+});
 
 mqttClient.on('connect', () => {
-    console.log('Buco backend connected to MQTT broker');
+    console.log('✅ Buco backend successfully connected to MQTT broker');
+    console.log('Connection details:', {
+        brokerUrl: brokerUrl,
+        clientId: mqttClient.options.clientId,
+        timestamp: new Date().toISOString()
+    });
+
     // Subscribe to version updates from subco
     mqttClient.subscribe('/Version', (err) => {
         if (err) {
-            console.error('MQTT subscription error:', err);
+            console.error('❌ MQTT subscription error for /Version topic:', err);
         } else {
-            console.log('Subscribed to /Version topic');
+            console.log('✅ Successfully subscribed to /Version topic');
         }
     });
 });
 
+mqttClient.on('reconnect', () => {
+    console.log('🔄 MQTT client attempting to reconnect...');
+});
+
+mqttClient.on('close', () => {
+    console.log('⚠️ MQTT connection closed');
+});
+
+mqttClient.on('disconnect', () => {
+    console.log('⚠️ MQTT client disconnected');
+});
+
+mqttClient.on('offline', () => {
+    console.log('⚠️ MQTT client is offline');
+});
+
 mqttClient.on('message', async (topic, message) => {
-    if (topic === '/Version') {
-        const newVersion = message.toString();
-        console.log(`Received version update from subco: ${newVersion}`);
+    try {
+        if (topic === '/Version') {
+            const newVersion = message.toString();
+            console.log(`📨 Received version update from subco: ${newVersion}`);
 
-        // Update subco version in our version data
-        versionData.subcoVersion = newVersion;
-        versionData.lastUpdated = new Date().toISOString();
+            // Update subco version in our version data
+            versionData.subcoVersion = newVersion;
+            versionData.lastUpdated = new Date().toISOString();
 
-        // Update the package.json file with the current version data
-        // This should preserve the fullPackageVersion that was set from the file upload
-        try {
-            await updateBucoPackageJson(newVersion);
-            console.log('Successfully updated buco package.json');
-        } catch (error) {
-            console.error('Failed to update package.json:', error);
+            // Update the package.json file with the current version data
+            // This should preserve the fullPackageVersion that was set from the file upload
+            try {
+                await updateBucoPackageJson(newVersion);
+                console.log('✅ Successfully updated buco package.json');
+            } catch (error) {
+                console.error('❌ Failed to update package.json:', error);
+            }
         }
+    } catch (error) {
+        console.error('❌ Error processing MQTT message:', error);
+        console.error('Topic:', topic);
+        console.error('Message:', message.toString());
     }
 });
 
 mqttClient.on('error', (error) => {
-    console.error('MQTT error:', error);
+    console.error('❌ MQTT connection error:', error);
+    console.error('Error details:', {
+        message: error.message,
+        code: error.code,
+        errno: error.errno,
+        syscall: error.syscall,
+        address: error.address,
+        port: error.port,
+        timestamp: new Date().toISOString()
+    });
+
+    // Log specific connection issues
+    if (error.code === 'ECONNREFUSED') {
+        console.error('🚫 Connection refused - MQTT broker may not be running or accessible');
+        console.error(`Check if MQTT broker is running at: ${brokerUrl}`);
+    } else if (error.code === 'ENOTFOUND') {
+        console.error('🚫 Host not found - Check the MQTT broker URL');
+    } else if (error.code === 'ETIMEDOUT') {
+        console.error('🚫 Connection timeout - MQTT broker may be unreachable');
+    }
 });
 
 // Middleware
@@ -499,12 +553,35 @@ async function updateBucoPackageJson(newSubcoVersion) {
     }
 }
 
+// Function to check MQTT connection status
+function getMqttStatus() {
+    return {
+        connected: mqttClient.connected,
+        reconnecting: mqttClient.reconnecting,
+        brokerUrl: brokerUrl,
+        lastError: mqttClient.lastError || null,
+        options: {
+            clientId: mqttClient.options?.clientId,
+            keepalive: mqttClient.options?.keepalive,
+            connectTimeout: mqttClient.options?.connectTimeout,
+            reconnectPeriod: mqttClient.options?.reconnectPeriod
+        }
+    };
+}
+
 // Health check endpoint
 app.get('/api/health', (req, res) => {
+    const mqttStatus = getMqttStatus();
+
     res.json({
         status: 'healthy',
         timestamp: new Date().toISOString(),
-        version: versionData.fullPackageVersion
+        version: versionData.fullPackageVersion,
+        mqtt: mqttStatus,
+        services: {
+            backend: 'running',
+            mqtt: mqttStatus.connected ? 'connected' : 'disconnected'
+        }
     });
 });
 
