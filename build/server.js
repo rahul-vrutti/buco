@@ -12,7 +12,7 @@ const PORT = process.env.PORT || 5000;
 const docker = new Docker();
 
 // MQTT client setup
-const brokerUrl = process.env.MQTT_BROKER_URL || 'mqtt://localhost:1883';
+const brokerUrl = process.env.MQTT_BROKER_URL;
 console.log('brokerUrl: ', brokerUrl);
 console.log('Attempting to connect to MQTT broker...');
 

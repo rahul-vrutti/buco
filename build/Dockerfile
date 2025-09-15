@@ -27,7 +27,7 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
 # Set environment variables
 ENV NODE_ENV=production
 ENV PORT=5000
-ENV MQTT_BROKER_URL=mqtt://localhost:1883
+ENV MQTT_BROKER_URL=mqtt://host.docker.internal:1883
 
 # Create a non-root user for security
 RUN addgroup -g 1001 -S nodejs
