@@ -13,6 +13,7 @@ const docker = new Docker();
 
 // MQTT client setup
 const brokerUrl = process.env.MQTT_BROKER_URL || 'mqtt://host.docker.internal:1883';
+console.log('brokerUrl: ', brokerUrl);
 const mqttClient = mqtt.connect(brokerUrl);
 
 mqttClient.on('connect', () => {
