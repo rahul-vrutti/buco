@@ -406,6 +406,17 @@ app.post('/api/pull-from-registry', async (req, res) => {
     }
 });
 
+// Get summary of all pushed images and their tags
+app.get('/api/registry-summary', async (req, res) => {
+    try {
+        const summary = await getRegistrySummary();
+        res.json(summary);
+    } catch (error) {
+        console.error('Registry summary error:', error);
+        res.status(500).json({ error: 'Failed to get registry summary' });
+    }
+});
+
 // Update specific service version
 app.post('/api/update-service/:serviceName', async (req, res) => {
     try {
@@ -705,59 +716,121 @@ async function pushImagesToLocalRegistry(imageNames) {
             try {
                 console.log(`Processing image: ${imageName}`);
 
-                // Create a local registry tag for the image
+                // Extract the base image name (without registry prefix)
                 const imageBaseName = imageName.includes('/') ? imageName.split('/').pop() : imageName;
-                const localImageName = `${localRegistryUrl}/${imageBaseName}`;
 
-                console.log(`Tagging image ${imageName} as ${localImageName}`);
-                await execPromise(`docker tag "${imageName}" "${localImageName}"`);
+                // Extract repository name and tag from the image
+                const [repoName, originalTag = 'latest'] = imageBaseName.split(':');
 
-                // Push to local registry with timeout
-                console.log(`Pushing image ${localImageName} to local registry`);
-                const { stdout, stderr } = await execPromise(`docker push "${localImageName}"`, {
+                // Create tags for both original version and latest
+                const originalLocalImageName = `${localRegistryUrl}/${repoName}:${originalTag}`;
+                const latestLocalImageName = `${localRegistryUrl}/${repoName}:latest`;
+
+                console.log(`Processing repository: ${repoName}, original tag: ${originalTag}`);
+
+                // Tag and push the original version
+                console.log(`Tagging image ${imageName} as ${originalLocalImageName}`);
+                await execPromise(`docker tag "${imageName}" "${originalLocalImageName}"`);
+
+                console.log(`Pushing original version ${originalLocalImageName} to local registry`);
+                const { stdout: originalStdout, stderr: originalStderr } = await execPromise(`docker push "${originalLocalImageName}"`, {
                     timeout: 600000 // 10 minute timeout for large images
                 });
 
-                if (stderr) {
-                    console.warn(`Push stderr for ${localImageName}:`, stderr);
-                    // Some stderr is normal for docker push
-                    if (stderr.includes('error') || stderr.includes('failed')) {
-                        results.warnings.push(`Push warning for ${localImageName}: ${stderr}`);
+                if (originalStderr) {
+                    console.warn(`Push stderr for ${originalLocalImageName}:`, originalStderr);
+                    if (originalStderr.includes('error') || originalStderr.includes('failed')) {
+                        results.warnings.push(`Push warning for ${originalLocalImageName}: ${originalStderr}`);
                     }
                 }
 
-                console.log(`Successfully pushed ${localImageName}`);
-                results.pushedImages.push({
-                    originalName: imageName,
-                    localName: localImageName,
-                    registryUrl: localRegistryUrl,
-                    status: 'success'
+                console.log(`Successfully pushed ${originalLocalImageName}`);
+
+                // Tag and push the latest version
+                console.log(`Tagging image ${imageName} as ${latestLocalImageName}`);
+                await execPromise(`docker tag "${imageName}" "${latestLocalImageName}"`);
+
+                console.log(`Pushing latest version ${latestLocalImageName} to local registry`);
+                const { stdout: latestStdout, stderr: latestStderr } = await execPromise(`docker push "${latestLocalImageName}"`, {
+                    timeout: 600000 // 10 minute timeout for large images
                 });
 
-                // Clean up the local tag to save space (optional)
+                if (latestStderr) {
+                    console.warn(`Push stderr for ${latestLocalImageName}:`, latestStderr);
+                    if (latestStderr.includes('error') || latestStderr.includes('failed')) {
+                        results.warnings.push(`Push warning for ${latestLocalImageName}: ${latestStderr}`);
+                    }
+                }
+
+                console.log(`Successfully pushed ${latestLocalImageName}`);
+
+                // Add both pushed images to results
+                results.pushedImages.push({
+                    originalName: imageName,
+                    localName: originalLocalImageName,
+                    registryUrl: localRegistryUrl,
+                    tag: originalTag,
+                    status: 'success',
+                    type: 'original'
+                });
+
+                results.pushedImages.push({
+                    originalName: imageName,
+                    localName: latestLocalImageName,
+                    registryUrl: localRegistryUrl,
+                    tag: 'latest',
+                    status: 'success',
+                    type: 'latest'
+                });
+
+                // Clean up the local tags to save space (optional)
                 try {
-                    await execPromise(`docker rmi "${localImageName}"`);
-                    console.log(`Cleaned up local tag: ${localImageName}`);
+                    await execPromise(`docker rmi "${originalLocalImageName}"`);
+                    console.log(`Cleaned up local tag: ${originalLocalImageName}`);
                 } catch (cleanupError) {
-                    console.warn(`Failed to cleanup local tag ${localImageName}:`, cleanupError.message);
+                    console.warn(`Failed to cleanup local tag ${originalLocalImageName}:`, cleanupError.message);
+                }
+
+                try {
+                    await execPromise(`docker rmi "${latestLocalImageName}"`);
+                    console.log(`Cleaned up local tag: ${latestLocalImageName}`);
+                } catch (cleanupError) {
+                    console.warn(`Failed to cleanup local tag ${latestLocalImageName}:`, cleanupError.message);
                 }
 
             } catch (pushError) {
                 console.error(`Failed to push image ${imageName}:`, pushError.message);
                 results.errors.push(`Failed to push ${imageName}: ${pushError.message}`);
 
-                // Add partial result for failed push
+                // Extract repository name for failed push entries
+                const imageBaseName = imageName.includes('/') ? imageName.split('/').pop() : imageName;
+                const [repoName, originalTag = 'latest'] = imageBaseName.split(':');
+
+                // Add partial results for failed pushes
                 results.pushedImages.push({
                     originalName: imageName,
-                    localName: `${localRegistryUrl}/${imageName.includes('/') ? imageName.split('/').pop() : imageName}`,
+                    localName: `${localRegistryUrl}/${repoName}:${originalTag}`,
                     registryUrl: localRegistryUrl,
+                    tag: originalTag,
                     status: 'failed',
+                    type: 'original',
+                    error: pushError.message
+                });
+
+                results.pushedImages.push({
+                    originalName: imageName,
+                    localName: `${localRegistryUrl}/${repoName}:latest`,
+                    registryUrl: localRegistryUrl,
+                    tag: 'latest',
+                    status: 'failed',
+                    type: 'latest',
                     error: pushError.message
                 });
             }
         }
 
         console.log(`Push operation completed. Success: ${results.pushedImages.filter(p => p.status === 'success').length}, Failed: ${results.errors.length}`);
+        console.log(`Total images pushed (including both original and latest tags): ${results.pushedImages.filter(p => p.status === 'success').length}`);
         return results;
 
     } catch (error) {
@@ -933,6 +1006,76 @@ async function pullImageFromRegistry(imageName) {
     } catch (error) {
         console.error('Error pulling image from registry:', error);
         throw new Error(`Failed to pull image from registry: ${error.message}`);
+    }
+}
+
+// Function to get registry summary with grouped images and tags
+async function getRegistrySummary() {
+    try {
+        const registryUrl = process.env.LOCAL_REGISTRY_URL || '100.103.254.213:5001';
+        console.log('Getting registry summary from:', registryUrl);
+
+        const result = {
+            registryUrl: registryUrl,
+            repositories: {},
+            totalRepositories: 0,
+            totalImages: 0,
+            accessible: false,
+            error: null
+        };
+
+        try {
+            // Check if registry is accessible
+            await execPromise(`curl -f http://${registryUrl}/v2/ --connect-timeout 5`);
+            result.accessible = true;
+
+            // Get catalog of repositories
+            const { stdout: catalogOutput } = await execPromise(`curl -s http://${registryUrl}/v2/_catalog`);
+            const catalog = JSON.parse(catalogOutput);
+
+            if (catalog.repositories && Array.isArray(catalog.repositories)) {
+                result.totalRepositories = catalog.repositories.length;
+
+                // For each repository, get its tags and group them
+                for (const repo of catalog.repositories) {
+                    try {
+                        const { stdout: tagsOutput } = await execPromise(`curl -s http://${registryUrl}/v2/${repo}/tags/list`);
+                        const tagData = JSON.parse(tagsOutput);
+
+                        if (tagData.tags && Array.isArray(tagData.tags)) {
+                            result.repositories[repo] = {
+                                name: repo,
+                                tags: tagData.tags.sort(), // Sort tags alphabetically
+                                totalTags: tagData.tags.length,
+                                hasLatest: tagData.tags.includes('latest'),
+                                versions: tagData.tags.filter(tag => tag !== 'latest'), // Non-latest tags
+                                pullCommands: {
+                                    latest: `docker pull ${registryUrl}/${repo}:latest`,
+                                    allTags: tagData.tags.map(tag => `docker pull ${registryUrl}/${repo}:${tag}`)
+                                }
+                            };
+                            result.totalImages += tagData.tags.length;
+                        }
+                    } catch (tagError) {
+                        console.warn(`Failed to get tags for ${repo}:`, tagError.message);
+                        result.repositories[repo] = {
+                            name: repo,
+                            error: tagError.message
+                        };
+                    }
+                }
+            }
+
+        } catch (registryError) {
+            console.warn('Registry not accessible or error occurred:', registryError.message);
+            result.accessible = false;
+            result.error = registryError.message;
+        }
+
+        return result;
+    } catch (error) {
+        console.error('Error getting registry summary:', error);
+        throw new Error(`Failed to get registry summary: ${error.message}`);
     }
 }
 
