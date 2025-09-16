@@ -3,16 +3,17 @@ const multer = require('multer');
 const cors = require('cors');
 const fs = require('fs-extra');
 const path = require('path');
-const Docker = require('dockerode');
-const axios = require('axios');
 const mqtt = require('mqtt');
+const DockerBuilder = require('./dockerBuilder');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
-const docker = new Docker();
+
+// Initialize Docker builder
+const dockerBuilder = new DockerBuilder();
 
 // MQTT client setup
-const brokerUrl = process.env.MQTT_BROKER_URL;
+const brokerUrl = process.env.MQTT_BROKER_URL || 'mqtt://localhost:1883';
 console.log('brokerUrl: ', brokerUrl);
 console.log('Attempting to connect to MQTT broker...');
 
@@ -133,26 +134,6 @@ let versionData = {
     lastUpdated: new Date().toISOString()
 };
 
-// Docker service configurations
-const dockerServices = {
-    buco: {
-        imageName: 'buco-service',
-        containerName: 'buco-container'
-    },
-    subco: {
-        imageName: 'subco-service',
-        containerName: 'subco-container'
-    },
-    mqtt: {
-        imageName: 'mqtt-service',
-        containerName: 'mqtt-container'
-    },
-    dhcp: {
-        imageName: 'dhcp-service',
-        containerName: 'dhcp-container'
-    }
-};
-
 // Routes
 
 // Get current version information
@@ -172,6 +153,22 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
         // Process the uploaded file and parse versions first
         const updateResult = await processFileAndUpdateServices(req.file);
 
+        // Build and push Docker images with new versions
+        let dockerResult = null;
+        try {
+            console.log('\n🐳 Starting Docker build and push process...');
+            dockerResult = await dockerBuilder.buildAndPushAll(updateResult.newVersions);
+            console.log('✅ Docker build and push completed successfully');
+        } catch (dockerError) {
+            console.error('❌ Docker build and push failed:', dockerError);
+            // Continue with MQTT notification even if Docker fails
+            dockerResult = {
+                success: false,
+                error: dockerError.message,
+                timestamp: new Date().toISOString()
+            };
+        }
+
         // Send file information AND version data to subco via MQTT
         const fileInfo = {
             filename: req.file.filename,
@@ -179,7 +176,8 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
             path: req.file.path,
             size: req.file.size,
             uploadTime: new Date().toISOString(),
-            versions: updateResult.newVersions // Include parsed versions
+            versions: updateResult.newVersions, // Include parsed versions
+            dockerResult: dockerResult // Include Docker build results
         };
 
         // Publish to /newUpdate topic
@@ -189,6 +187,7 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
             } else {
                 console.log('File update sent to subco via MQTT:', fileInfo.filename);
                 console.log('Versions sent:', fileInfo.versions);
+                console.log('Docker result sent:', dockerResult?.success ? 'SUCCESS' : 'FAILED');
             }
         });
 
@@ -196,6 +195,7 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
             message: 'File uploaded and services updated successfully',
             file: req.file.filename,
             updateResult,
+            dockerResult,
             newVersions: versionData
         });
     } catch (error) {
@@ -227,28 +227,47 @@ app.post('/api/update-service/:serviceName', async (req, res) => {
     }
 });
 
-// Get Docker services status
-app.get('/api/docker-status', async (req, res) => {
+// Manual Docker build and push endpoint
+app.post('/api/docker/build-and-push', async (req, res) => {
     try {
-        const status = await getDockerServicesStatus();
-        res.json(status);
+        const { versions } = req.body;
+
+        if (!versions) {
+            return res.status(400).json({ error: 'Versions object is required' });
+        }
+
+        console.log('Manual Docker build and push triggered with versions:', versions);
+
+        const dockerResult = await dockerBuilder.buildAndPushAll(versions);
+
+        res.json({
+            message: 'Docker build and push completed successfully',
+            result: dockerResult
+        });
     } catch (error) {
-        console.error('Docker status error:', error);
-        res.status(500).json({ error: 'Failed to get Docker status' });
+        console.error('Manual Docker build error:', error);
+        res.status(500).json({
+            error: 'Failed to build and push Docker images',
+            details: error.message
+        });
     }
 });
 
-// Update all services with Watchtower
-app.post('/api/update-all-watchtower', async (req, res) => {
+// Get Docker registry status
+app.get('/api/docker/registry-status', async (req, res) => {
     try {
-        const result = await triggerWatchtowerUpdate();
+        const registryStatus = await dockerBuilder.getRegistryStatus();
+
         res.json({
-            message: 'Watchtower update triggered successfully',
-            result
+            message: 'Registry status retrieved successfully',
+            status: registryStatus
         });
     } catch (error) {
-        console.error('Watchtower update error:', error);
-        res.status(500).json({ error: 'Failed to trigger Watchtower update' });
+        console.error('Registry status error:', error);
+        res.status(500).json({
+            error: 'Failed to get registry status',
+            details: error.message
+        });
     }
 });
 
@@ -380,133 +399,28 @@ async function processFileAndUpdateServices(file) {
 
         console.log('Updated versionData:', versionData);
 
-        // Update Docker services
-        const updateResults = [];
-        for (const serviceName of Object.keys(dockerServices)) {
-            try {
-                const result = await updateDockerService(serviceName, newVersions[`${serviceName}Version`]);
-                updateResults.push({ service: serviceName, result });
-            } catch (error) {
-                console.error(`Failed to update ${serviceName}:`, error);
-                updateResults.push({ service: serviceName, error: error.message });
-            }
-        }
-
         return {
             message: 'Services updated',
-            updateResults,
-            newVersions: versionData  // Return the updated versionData instead of parsed newVersions
+            newVersions: versionData  // Return the updated versionData
         };
     } catch (error) {
         throw new Error(`File processing failed: ${error.message}`);
     }
 }
 
-async function updateServiceVersion(serviceName, version, updateMethod = 'docker') {
+async function updateServiceVersion(serviceName, version, updateMethod = 'mqtt') {
     try {
         // Update version in memory
         versionData[`${serviceName}Version`] = version;
         versionData.lastUpdated = new Date().toISOString();
 
-        if (updateMethod === 'watchtower') {
-            return await triggerWatchtowerUpdate();
-        } else {
-            return await updateDockerService(serviceName, version);
-        }
-    } catch (error) {
-        throw new Error(`Service update failed: ${error.message}`);
-    }
-}
-
-async function updateDockerService(serviceName, version) {
-    try {
-        const serviceConfig = dockerServices[serviceName];
-        if (!serviceConfig) {
-            throw new Error(`Unknown service: ${serviceName}`);
-        }
-
-        // Check if container exists
-        const containers = await docker.listContainers({ all: true });
-        const existingContainer = containers.find(container =>
-            container.Names.some(name => name.includes(serviceConfig.containerName))
-        );
-
-        if (existingContainer) {
-            // Stop and remove existing container
-            const container = docker.getContainer(existingContainer.Id);
-            await container.stop();
-            await container.remove();
-            console.log(`Stopped and removed container: ${serviceConfig.containerName}`);
-        }
-
-        // Pull new image with version tag
-        const imageName = `${serviceConfig.imageName}:${version}`;
-        console.log(`Pulling image: ${imageName}`);
-
-        // Note: In a real implementation, you would actually pull and start the container
-        // For demo purposes, we'll simulate this
-
         return {
             status: 'success',
             message: `Updated ${serviceName} to version ${version}`,
-            imageName,
-            method: 'docker-local'
+            method: 'version-tracking'
         };
     } catch (error) {
-        throw new Error(`Docker service update failed: ${error.message}`);
-    }
-}
-
-async function getDockerServicesStatus() {
-    try {
-        const containers = await docker.listContainers({ all: true });
-        const status = {};
-
-        for (const [serviceName, config] of Object.entries(dockerServices)) {
-            const container = containers.find(c =>
-                c.Names.some(name => name.includes(config.containerName))
-            );
-
-            status[serviceName] = {
-                running: container ? container.State === 'running' : false,
-                version: versionData[`${serviceName}Version`],
-                containerName: config.containerName,
-                imageName: config.imageName
-            };
-        }
-
-        return status;
-    } catch (error) {
-        throw new Error(`Failed to get Docker status: ${error.message}`);
-    }
-}
-
-async function triggerWatchtowerUpdate() {
-    try {
-        // Check if Watchtower container is running
-        const containers = await docker.listContainers();
-        const watchtowerContainer = containers.find(container =>
-            container.Names.some(name => name.includes('watchtower'))
-        );
-
-        if (!watchtowerContainer) {
-            throw new Error('Watchtower container not found');
-        }
-
-        // Send update signal to Watchtower
-        const watchtower = docker.getContainer(watchtowerContainer.Id);
-
-        // In a real implementation, you might send a signal or API call to Watchtower
-        // For demo purposes, we'll simulate this
-        console.log('Triggering Watchtower update...');
-
-        return {
-            status: 'success',
-            message: 'Watchtower update triggered',
-            method: 'watchtower'
-        };
-    } catch (error) {
-        throw new Error(`Watchtower update failed: ${error.message}`);
+        throw new Error(`Service update failed: ${error.message}`);
     }
 }
 
@@ -570,17 +484,29 @@ function getMqttStatus() {
 }
 
 // Health check endpoint
-app.get('/api/health', (req, res) => {
+app.get('/api/health', async (req, res) => {
     const mqttStatus = getMqttStatus();
+
+    // Check Docker status
+    let dockerStatus = { available: false, error: null };
+    try {
+        await dockerBuilder.checkDockerStatus();
+        dockerStatus.available = true;
+    } catch (error) {
+        dockerStatus.error = error.message;
+    }
 
     res.json({
         status: 'healthy',
         timestamp: new Date().toISOString(),
         version: versionData.fullPackageVersion,
         mqtt: mqttStatus,
+        docker: dockerStatus,
+        registry: dockerBuilder.registryUrl,
         services: {
             backend: 'running',
-            mqtt: mqttStatus.connected ? 'connected' : 'disconnected'
+            mqtt: mqttStatus.connected ? 'connected' : 'disconnected',
+            docker: dockerStatus.available ? 'available' : 'unavailable'
         }
     });
 });

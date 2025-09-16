@@ -8,7 +8,7 @@
         "dev": "nodemon server.js",
         "build": "npm run build:dir && npm run build:copy",
         "build:dir": "node -e \"require('fs').mkdirSync('../build', { recursive: true })\"",
-        "build:copy": "npx cpy server.js package.json ../build"
+        "build:copy": "npx cpy server.js dockerBuilder.js package.json ../build"
     },
     "dependencies": {
         "axios": "^1.5.0",
