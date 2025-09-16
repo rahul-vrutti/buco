@@ -12,6 +12,7 @@ RUN npm ci --only=production
 
 # Copy the application files
 COPY server.js ./
+COPY dockerBuilder.js ./
 COPY front/ ./front/
 
 # Create uploads directory
