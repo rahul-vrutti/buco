@@ -1,12 +1,12 @@
 #!/bin/bash
 
-# Build script for buco service on Linux
-# Usage: ./build-buco.sh [version]
+# Build script for subco service on Linux
+# Usage: ./build-subco.sh [version]
 
 VERSION=${1:-"latest"}
 REGISTRY="100.103.254.213:5001"
-SERVICE_NAME="buco"
-BUILD_DIR="./build"
+SERVICE_NAME="subco"
+BUILD_DIR="../subco"
 
 echo "🏗️  Building $SERVICE_NAME:$VERSION"
 echo "📁 Build directory: $BUILD_DIR"

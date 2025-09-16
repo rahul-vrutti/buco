@@ -7,6 +7,11 @@ class DockerBuilder {
         this.registryUrl = '100.103.254.213:5001';
         this.bucoWorkDir = path.resolve(__dirname, '../build');
         this.subcoWorkDir = path.resolve(__dirname, '../../subco');
+        this.platform = process.platform;
+        this.isLinux = this.platform === 'linux';
+        this.isWindows = this.platform === 'win32';
+
+        console.log(`🖥️  Platform detected: ${this.platform}`);
     }
 
     /**
@@ -16,11 +21,14 @@ class DockerBuilder {
         return new Promise((resolve, reject) => {
             console.log(`🔧 Executing: ${command} ${args.join(' ')}`);
 
-            const process = spawn(command, args, {
+            // Platform-specific shell configuration
+            const shellOptions = {
                 stdio: 'pipe',
-                shell: true,
+                shell: this.isWindows ? true : '/bin/bash',
                 ...options
-            });
+            };
+
+            const process = spawn(command, args, shellOptions);
 
             let stdout = '';
             let stderr = '';
@@ -137,19 +145,31 @@ class DockerBuilder {
         try {
             console.log(`🚀 Pushing ${registryImage} to registry`);
 
-            // For insecure registries, we might need to add --insecure-registry flag
-            // But first try the normal push
             await this.executeCommand('docker', [
                 'push', registryImage
             ]);
 
             console.log(`✅ Successfully pushed ${registryImage}`);
         } catch (error) {
-            // If it fails with HTTPS error, suggest the fix
+            // Platform-specific error guidance
             if (error.message.includes('server gave HTTP response to HTTPS client')) {
                 console.error(`❌ Registry ${this.registryUrl} is using HTTP but Docker expects HTTPS`);
-                console.error(`💡 To fix this, add "${this.registryUrl}" to Docker's insecure registries in Docker Desktop settings`);
-                console.error(`   Or configure the registry to use HTTPS`);
+
+                if (this.isLinux) {
+                    console.error(`💡 To fix this on Linux:`);
+                    console.error(`   1. Edit /etc/docker/daemon.json (as root):`);
+                    console.error(`   {`);
+                    console.error(`     "insecure-registries": ["${this.registryUrl}"]`);
+                    console.error(`   }`);
+                    console.error(`   2. sudo systemctl restart docker`);
+                    console.error(`   3. Or run: sudo ./configure-docker-registry.sh`);
+                } else if (this.isWindows) {
+                    console.error(`💡 To fix this on Windows:`);
+                    console.error(`   Add "${this.registryUrl}" to Docker Desktop insecure registries`);
+                    console.error(`   Settings > Docker Engine > insecure-registries`);
+                } else {
+                    console.error(`💡 Add "${this.registryUrl}" to Docker daemon's insecure registries`);
+                }
             }
             console.error(`❌ Failed to push ${registryImage}`, error);
             throw error;
