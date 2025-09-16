@@ -1,0 +1,14 @@
+# Version update file for buco system - Both Services
+# This file contains version information for all services
+
+# Full package version
+fullPackageVersion=1.2.0
+
+# Individual service versions
+buco=1.2.0
+subco=1.2.0
+mqtt=3.3.2
+dhcp=4.4.2
+
+# Update timestamp: 2025-09-16
+# Description: Test update with both buco and subco Docker builds
