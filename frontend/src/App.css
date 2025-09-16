@@ -248,6 +248,52 @@
     transform: translateY(-2px);
 }
 
+/* Docker Upload Specific Styles */
+.docker-upload {
+    background: #3498db !important;
+}
+
+.docker-upload:hover {
+    background: #2980b9 !important;
+}
+
+.docker-upload:disabled {
+    background: #95a5a6 !important;
+}
+
+.docker-status {
+    background: #f8f9fa;
+    border: 1px solid #dee2e6;
+    border-radius: 8px;
+    padding: 15px;
+    margin: 15px 0;
+    text-align: left;
+}
+
+.docker-status h4 {
+    margin-top: 0;
+    margin-bottom: 10px;
+    color: #495057;
+}
+
+.docker-status p {
+    margin: 5px 0;
+    font-size: 0.9rem;
+    color: #6c757d;
+}
+
+.message pre {
+    background: #f8f9fa;
+    border: 1px solid #dee2e6;
+    border-radius: 4px;
+    padding: 10px;
+    font-size: 0.85rem;
+    text-align: left;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    margin: 0;
+}
+
 /* Responsive Design */
 @media (max-width: 768px) {
     .App {

@@ -1,6 +1,9 @@
 # Use the official Node.js 18 Alpine image
 FROM node:18-alpine
 
+# Install Docker CLI and curl for health checks
+RUN apk add --no-cache docker-cli curl
+
 # Set the working directory inside the container
 WORKDIR /app
 
@@ -16,6 +19,7 @@ COPY front/ ./front/
 
 # Create uploads directory
 RUN mkdir -p ../uploads
+RUN mkdir -p ../uploads/docker-images
 
 # Expose the port the app runs on
 EXPOSE 5000
@@ -29,17 +33,14 @@ ENV NODE_ENV=production
 ENV PORT=5000
 ENV MQTT_BROKER_URL=mqtt://100.103.254.213:1883
 
-# Create a non-root user for security
-RUN addgroup -g 1001 -S nodejs
-RUN adduser -S buco -u 1001
+# Change ownership of the app directory and uploads directory
+RUN chown -R node:node /app
+RUN mkdir -p /uploads && chown -R node:node /uploads
+RUN mkdir -p /uploads/docker-images && chown -R node:node /uploads/docker-images
 
-# Change ownership of the app directory and front directory
-RUN chown -R buco:nodejs /app
-RUN chown -R buco:nodejs /app/front
-RUN chown -R buco:nodejs /uploads 2>/dev/null || true
-
-# Switch to non-root user
-USER buco
+# Note: Running as root to access Docker socket
+# In production, consider using Docker-in-Docker or Docker socket proxy
+USER root
 
 # Start the application
 CMD ["npm", "start"]
