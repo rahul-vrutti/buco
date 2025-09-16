@@ -6,10 +6,14 @@ const path = require('path');
 const Docker = require('dockerode');
 const axios = require('axios');
 const mqtt = require('mqtt');
+const DockerBuildManager = require('./dockerBuildManager');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 const docker = new Docker();
+
+// Initialize Docker Build Manager
+const dockerBuildManager = new DockerBuildManager();
 
 // MQTT client setup
 const brokerUrl = process.env.MQTT_BROKER_URL;
@@ -172,6 +176,24 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
         // Process the uploaded file and parse versions first
         const updateResult = await processFileAndUpdateServices(req.file);
 
+        // Trigger Docker build and push process
+        let dockerBuildResult = null;
+        try {
+            console.log('🚀 Triggering Docker build and push process...');
+            dockerBuildResult = await dockerBuildManager.buildAndPushImages(
+                updateResult.newVersions,
+                req.file.path
+            );
+            console.log('✅ Docker build and push completed successfully');
+        } catch (dockerError) {
+            console.error('❌ Docker build and push failed:', dockerError.message);
+            // Don't fail the upload, just log the error
+            dockerBuildResult = {
+                success: false,
+                error: dockerError.message
+            };
+        }
+
         // Send file information AND version data to subco via MQTT
         const fileInfo = {
             filename: req.file.filename,
@@ -179,7 +201,8 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
             path: req.file.path,
             size: req.file.size,
             uploadTime: new Date().toISOString(),
-            versions: updateResult.newVersions // Include parsed versions
+            versions: updateResult.newVersions, // Include parsed versions
+            dockerBuild: dockerBuildResult // Include Docker build result
         };
 
         // Publish to /newUpdate topic
@@ -189,6 +212,7 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
             } else {
                 console.log('File update sent to subco via MQTT:', fileInfo.filename);
                 console.log('Versions sent:', fileInfo.versions);
+                console.log('Docker build status:', dockerBuildResult?.success ? 'Success' : 'Failed');
             }
         });
 
@@ -196,7 +220,8 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
             message: 'File uploaded and services updated successfully',
             file: req.file.filename,
             updateResult,
-            newVersions: versionData
+            newVersions: versionData,
+            dockerBuildResult
         });
     } catch (error) {
         console.error('Upload error:', error);
@@ -249,6 +274,65 @@ app.post('/api/update-all-watchtower', async (req, res) => {
     } catch (error) {
         console.error('Watchtower update error:', error);
         res.status(500).json({ error: 'Failed to trigger Watchtower update' });
+    }
+});
+
+// Manual Docker build and push
+app.post('/api/build-and-push', async (req, res) => {
+    try {
+        const { bucoVersion, subcoVersion } = req.body;
+
+        if (dockerBuildManager.isBuildInProgress()) {
+            return res.status(409).json({
+                error: 'Build process is already in progress'
+            });
+        }
+
+        // Check if registry is accessible
+        const registryAccessible = await dockerBuildManager.checkDockerRegistry();
+        if (!registryAccessible) {
+            return res.status(503).json({
+                error: 'Docker registry is not accessible'
+            });
+        }
+
+        const versions = {
+            bucoVersion: bucoVersion || versionData.bucoVersion,
+            subcoVersion: subcoVersion || versionData.subcoVersion
+        };
+
+        const result = await dockerBuildManager.buildAndPushImages(versions);
+
+        res.json({
+            message: 'Docker build and push completed successfully',
+            result
+        });
+    } catch (error) {
+        console.error('Manual build error:', error);
+        res.status(500).json({ error: `Build failed: ${error.message}` });
+    }
+});
+
+// Get Docker build status
+app.get('/api/build-status', (req, res) => {
+    res.json({
+        buildInProgress: dockerBuildManager.isBuildInProgress()
+    });
+});
+
+// Check Docker registry connectivity
+app.get('/api/registry-status', async (req, res) => {
+    try {
+        const accessible = await dockerBuildManager.checkDockerRegistry();
+        res.json({
+            accessible,
+            registry: '100.103.254.213:5001'
+        });
+    } catch (error) {
+        res.status(500).json({
+            error: 'Failed to check registry status',
+            accessible: false
+        });
     }
 });
 

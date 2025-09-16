@@ -1,6 +1,9 @@
 # Use the official Node.js 18 Alpine image
 FROM node:18-alpine
 
+# Install Docker CLI and other utilities
+RUN apk add --no-cache docker-cli curl bash git
+
 # Set the working directory inside the container
 WORKDIR /app
 
@@ -12,10 +15,28 @@ RUN npm ci --only=production
 
 # Copy the application files
 COPY server.js ./
+COPY dockerBuildManager.js ./
+COPY scripts/ ./scripts/
 COPY front/ ./front/
 
-# Create uploads directory
-RUN mkdir -p ../uploads
+# Create uploads directory with proper permissions
+RUN mkdir -p /uploads
+RUN chmod 777 /uploads
+
+# Create a non-root user for security
+RUN addgroup -g 1001 -S nodejs
+RUN adduser -S buco -u 1001
+
+# Add user to docker group (this will work when docker socket is mounted)
+RUN addgroup -g 999 -S docker 2>/dev/null || true
+RUN adduser buco docker 2>/dev/null || true
+
+# Change ownership of the app directory
+RUN chown -R buco:nodejs /app
+RUN chown -R buco:nodejs /app/front
+
+# Don't switch to non-root user yet - we need root permissions for Docker
+# USER buco will be set at runtime if needed
 
 # Expose the port the app runs on
 EXPOSE 5000
@@ -29,17 +50,5 @@ ENV NODE_ENV=production
 ENV PORT=5000
 ENV MQTT_BROKER_URL=mqtt://100.103.254.213:1883
 
-# Create a non-root user for security
-RUN addgroup -g 1001 -S nodejs
-RUN adduser -S buco -u 1001
-
-# Change ownership of the app directory and front directory
-RUN chown -R buco:nodejs /app
-RUN chown -R buco:nodejs /app/front
-RUN chown -R buco:nodejs /uploads 2>/dev/null || true
-
-# Switch to non-root user
-USER buco
-
-# Start the application
-CMD ["npm", "start"]
+# Start the application as root to access Docker socket
+CMD ["node", "server"]
