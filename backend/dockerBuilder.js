@@ -6,12 +6,41 @@ class DockerBuilder {
     constructor() {
         this.registryUrl = '100.103.254.213:5001';
         this.bucoWorkDir = path.resolve(__dirname, '../build');
-        this.subcoWorkDir = path.resolve(__dirname, '../../subco');
+        this.isInContainer = this.detectContainer();
+
+        // Set subco work directory based on environment
+        if (this.isInContainer) {
+            this.subcoWorkDir = '/subco'; // Mounted directory in container
+        } else {
+            this.subcoWorkDir = path.resolve(__dirname, '../../subco');
+        }
+
         this.platform = process.platform;
         this.isLinux = this.platform === 'linux';
         this.isWindows = this.platform === 'win32';
 
         console.log(`🖥️  Platform detected: ${this.platform}`);
+        console.log(`📦 Running in container: ${this.isInContainer}`);
+        console.log(`📁 Buco work dir: ${this.bucoWorkDir}`);
+        console.log(`📁 Subco work dir: ${this.subcoWorkDir}`);
+    }
+
+    /**
+     * Detect if running inside a Docker container
+     */
+    detectContainer() {
+        try {
+            // Check for container indicators
+            if (fs.existsSync('/.dockerenv')) return true;
+            if (process.env.DOCKER_CONTAINER) return true;
+            if (fs.existsSync('/proc/1/cgroup')) {
+                const cgroup = fs.readFileSync('/proc/1/cgroup', 'utf8');
+                if (cgroup.includes('docker') || cgroup.includes('containerd')) return true;
+            }
+            return false;
+        } catch (error) {
+            return false;
+        }
     }
 
     /**
@@ -21,14 +50,24 @@ class DockerBuilder {
         return new Promise((resolve, reject) => {
             console.log(`🔧 Executing: ${command} ${args.join(' ')}`);
 
-            // Platform-specific shell configuration
-            const shellOptions = {
-                stdio: 'pipe',
-                shell: this.isWindows ? true : '/bin/bash',
-                ...options
-            };
+            // Container-aware shell configuration
+            let shellOptions;
 
-            const process = spawn(command, args, shellOptions);
+            if (this.isInContainer) {
+                // In container: use simpler shell configuration
+                shellOptions = {
+                    stdio: 'pipe',
+                    shell: '/bin/sh', // Use sh instead of bash for container compatibility
+                    ...options
+                };
+            } else {
+                // Host system: use platform-specific shell
+                shellOptions = {
+                    stdio: 'pipe',
+                    shell: this.isWindows ? true : '/bin/bash',
+                    ...options
+                };
+            } const process = spawn(command, args, shellOptions);
 
             let stdout = '';
             let stderr = '';
@@ -64,11 +103,28 @@ class DockerBuilder {
      */
     async checkDockerStatus() {
         try {
+            if (this.isInContainer) {
+                // In container: check if Docker socket is mounted
+                if (fs.existsSync('/var/run/docker.sock')) {
+                    console.log('✅ Docker socket found in container');
+                } else {
+                    throw new Error('Docker socket not mounted. Container needs -v /var/run/docker.sock:/var/run/docker.sock');
+                }
+            }
+
             await this.executeCommand('docker', ['version'], { stdio: 'pipe' });
             console.log('✅ Docker is running and accessible');
             return true;
         } catch (error) {
             console.error('❌ Docker is not accessible:', error.message);
+
+            if (this.isInContainer) {
+                console.error('💡 Container Docker access requires:');
+                console.error('   1. Mount Docker socket: -v /var/run/docker.sock:/var/run/docker.sock');
+                console.error('   2. Or use Docker-in-Docker (DinD) setup');
+                console.error('   3. Ensure container has docker client installed');
+            }
+
             throw new Error('Docker is not running or not accessible. Please ensure Docker is installed and running.');
         }
     }
@@ -94,6 +150,16 @@ class DockerBuilder {
 
             const imageName = `${serviceName}:${version}`;
 
+            // Special handling for container environment
+            if (this.isInContainer) {
+                console.log(`📦 Building in container environment`);
+
+                // For subco, we need to ensure the source is accessible
+                if (serviceName === 'subco' && !await fs.pathExists('/subco')) {
+                    throw new Error('Subco source directory not mounted. Container needs -v ../subco:/subco:ro');
+                }
+            }
+
             // Build the image
             await this.executeCommand('docker', [
                 'build',
@@ -108,9 +174,7 @@ class DockerBuilder {
             console.error(`❌ Failed to build ${serviceName}:${version}`, error);
             throw error;
         }
-    }
-
-    /**
+    }    /**
      * Tag image for registry
      */
     async tagImageForRegistry(localImage, serviceName, version) {
