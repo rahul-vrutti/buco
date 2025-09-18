@@ -181,24 +181,80 @@ const dockerServices = {
     }
 };
 
-// Dashboard status tracking
+// Dashboard status tracking (will be initialized with actual running image versions)
 let dashboardStatus = {
     buco: {
         status: 'active',
         lastUpdatedTar: null,
         lastUpdateTime: null,
-        version: '1.0.0',
+        version: 'detecting...',
         imageVersions: []
     },
     subco: {
         status: 'active',
         lastUpdatedTar: null,
         lastUpdateTime: null,
-        version: '1.0.0',
+        version: 'detecting...',
         imageVersions: []
     },
     connectedSubcos: new Map() // Map to track connected Subcos with IP, MAC, version
 };
+
+// Function to get current running Docker image version for a service
+async function getCurrentRunningImageVersion(serviceName) {
+    try {
+        console.log(`Detecting current running image version for ${serviceName}...`);
+        
+        // Try to find the running container by service name
+        const { stdout: containersOutput } = await execPromise(
+            `docker ps --format "{{.Names}}\t{{.Image}}" | grep -i ${serviceName} || echo "not_found"`
+        );
+
+        if (containersOutput.includes('not_found') || !containersOutput.trim()) {
+            console.log(`No running container found for ${serviceName}`);
+            return 'not-running';
+        }
+
+        const lines = containersOutput.trim().split('\n');
+        for (const line of lines) {
+            const [containerName, imageName] = line.split('\t');
+            if (containerName && imageName) {
+                console.log(`Found running container: ${containerName} using image: ${imageName}`);
+                return imageName;
+            }
+        }
+
+        return 'unknown';
+    } catch (error) {
+        console.error(`Error detecting image version for ${serviceName}:`, error.message);
+        return 'detection-failed';
+    }
+}
+
+// Function to initialize dashboard status with actual running image versions
+async function initializeDashboardStatus() {
+    try {
+        console.log('🔍 Initializing dashboard status with current running image versions...');
+
+        // Detect current running image versions
+        const bucoVersion = await getCurrentRunningImageVersion('buco');
+        const subcoVersion = await getCurrentRunningImageVersion('subco');
+
+        // Update dashboard status with detected versions
+        dashboardStatus.buco.version = bucoVersion;
+        dashboardStatus.subco.version = subcoVersion;
+
+        console.log('✅ Dashboard status initialized:');
+        console.log(`   Buco version: ${bucoVersion}`);
+        console.log(`   Subco version: ${subcoVersion}`);
+
+    } catch (error) {
+        console.error('❌ Error initializing dashboard status:', error);
+        // Fallback to default versions if detection fails
+        dashboardStatus.buco.version = 'detection-failed';
+        dashboardStatus.subco.version = 'detection-failed';
+    }
+}
 
 // Helper function to clean up inactive Subcos
 function cleanupInactiveSubcos() {
@@ -1214,8 +1270,11 @@ app.get('*', (req, res) => {
     res.sendFile(path.join(__dirname, './front', 'index.html'));
 });
 
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
     console.log(`Buco backend server running on port ${PORT}`);
     console.log(`Health check: http://localhost:${PORT}/api/health`);
     console.log(`Frontend available at: http://localhost:${PORT}`);
+    
+    // Initialize dashboard status with current running image versions
+    await initializeDashboardStatus();
 });
