@@ -7,9 +7,16 @@ function App() {
     const [uploadingDockerTar, setUploadingDockerTar] = useState(false);
     const [dockerMessage, setDockerMessage] = useState('');
     const [dockerImagesStatus, setDockerImagesStatus] = useState(null);
+    const [dashboardStatus, setDashboardStatus] = useState(null);
 
     useEffect(() => {
         fetchDockerImagesStatus();
+        fetchDashboardStatus();
+
+        // Set up interval to refresh dashboard status every 10 seconds
+        const interval = setInterval(fetchDashboardStatus, 10000);
+
+        return () => clearInterval(interval);
     }, []);
 
     const fetchDockerImagesStatus = async () => {
@@ -18,6 +25,15 @@ function App() {
             setDockerImagesStatus(response.data);
         } catch (error) {
             console.error('Error fetching Docker images status:', error);
+        }
+    };
+
+    const fetchDashboardStatus = async () => {
+        try {
+            const response = await axios.get('/api/dashboard-status');
+            setDashboardStatus(response.data);
+        } catch (error) {
+            console.error('Error fetching dashboard status:', error);
         }
     };
 
@@ -74,6 +90,7 @@ function App() {
             setDockerTarFile(null);
             document.getElementById('dockerTarInput').value = '';
             fetchDockerImagesStatus();
+            fetchDashboardStatus(); // Refresh dashboard status after upload
         } catch (error) {
             setDockerMessage(`Error: ${error.response?.data?.error || 'Docker tar upload failed'}`);
         } finally {
@@ -89,6 +106,75 @@ function App() {
             </header>
 
             <main className="App-main">
+                {/* Dashboard Status Section */}
+                <section className="status-section">
+                    <h2>📊 System Status Dashboard</h2>
+
+                    {dashboardStatus && (
+                        <div className="status-grid">
+                            {/* Buco Status */}
+                            <div className="status-card">
+                                <h3>🏠 Buco Status</h3>
+                                <div className="status-info">
+                                    <p><strong>Status:</strong> <span className={`status-indicator ${dashboardStatus.buco.status}`}>{dashboardStatus.buco.status}</span></p>
+                                    <p><strong>Version:</strong> {dashboardStatus.buco.version}</p>
+                                    <p><strong>Last Updated Tar:</strong> {dashboardStatus.buco.lastUpdatedTar || 'None'}</p>
+                                    {dashboardStatus.buco.lastUpdateTime && (
+                                        <p><strong>Last Update Time:</strong> {new Date(dashboardStatus.buco.lastUpdateTime).toLocaleString()}</p>
+                                    )}
+                                </div>
+                            </div>
+
+                            {/* Subco Status */}
+                            <div className="status-card">
+                                <h3>📡 Subco Status</h3>
+                                <div className="status-info">
+                                    <p><strong>Status:</strong> <span className={`status-indicator ${dashboardStatus.subco.status}`}>{dashboardStatus.subco.status}</span></p>
+                                    <p><strong>Version:</strong> {dashboardStatus.subco.version}</p>
+                                    <p><strong>Last Updated Tar:</strong> {dashboardStatus.subco.lastUpdatedTar || 'None'}</p>
+                                    {dashboardStatus.subco.lastUpdateTime && (
+                                        <p><strong>Last Update Time:</strong> {new Date(dashboardStatus.subco.lastUpdateTime).toLocaleString()}</p>
+                                    )}
+                                </div>
+                            </div>
+
+                            {/* MQTT Status */}
+                            <div className="status-card">
+                                <h3>📨 MQTT Status</h3>
+                                <div className="status-info">
+                                    <p><strong>Connection:</strong> <span className={`status-indicator ${dashboardStatus.mqtt.connected ? 'active' : 'inactive'}`}>
+                                        {dashboardStatus.mqtt.connected ? 'Connected' : 'Disconnected'}
+                                    </span></p>
+                                    <p><strong>Broker:</strong> {dashboardStatus.mqtt.brokerUrl}</p>
+                                    <p><strong>Client ID:</strong> {dashboardStatus.mqtt.options.clientId}</p>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Connected Subcos List */}
+                    {dashboardStatus && dashboardStatus.connectedSubcos && (
+                        <div className="connected-devices">
+                            <h3>🌐 Connected Subcos ({dashboardStatus.connectedSubcos.length})</h3>
+                            {dashboardStatus.connectedSubcos.length === 0 ? (
+                                <p className="no-devices">No Subcos currently connected</p>
+                            ) : (
+                                <div className="devices-grid">
+                                    {dashboardStatus.connectedSubcos.map((subco, index) => (
+                                        <div key={`${subco.ip}_${subco.mac}`} className="device-card">
+                                            <h4>Device {index + 1}</h4>
+                                            <p><strong>IP:</strong> {subco.ip}</p>
+                                            <p><strong>MAC:</strong> {subco.mac}</p>
+                                            <p><strong>Version:</strong> {subco.version}</p>
+                                            <p><strong>Last Seen:</strong> {new Date(subco.timestamp).toLocaleString()}</p>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+                    )}
+                </section>
+
                 {/* Docker Tar Upload Section */}
                 <section className="upload-section">
                     <h2>🐳 Docker Images Upload</h2>
