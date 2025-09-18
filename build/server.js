@@ -15,7 +15,7 @@ const PORT = process.env.PORT || 5000;
 const docker = new Docker();
 
 // MQTT client setup
-const brokerUrl = process.env.MQTT_BROKER_URL;
+const brokerUrl = process.env.MQTT_BROKER_URL || 'mqtt://100.103.254.213:1883';
 console.log('brokerUrl: ', brokerUrl);
 console.log('Attempting to connect to MQTT broker...');
 
@@ -42,6 +42,15 @@ mqttClient.on('connect', () => {
             console.log('✅ Successfully subscribed to /Version topic');
         }
     });
+
+    // Subscribe to device status updates from subcos
+    mqttClient.subscribe('/DeviceStatus', (err) => {
+        if (err) {
+            console.error('❌ MQTT subscription error for /DeviceStatus topic:', err);
+        } else {
+            console.log('✅ Successfully subscribed to /DeviceStatus topic');
+        }
+    });
 });
 
 mqttClient.on('reconnect', () => {
@@ -65,13 +74,27 @@ mqttClient.on('message', async (topic, message) => {
         if (topic === '/Version') {
             const newVersion = message.toString();
             console.log(`📨 Received version update from subco: ${newVersion}`);
-
-            // Update the package.json file with the current version data
+        } else if (topic === '/DeviceStatus') {
             try {
-                await updateBucoPackageJson(newVersion);
-                console.log('✅ Successfully updated buco package.json');
-            } catch (error) {
-                console.error('❌ Failed to update package.json:', error);
+                const deviceInfo = JSON.parse(message.toString());
+                console.log(`📨 Received device status update:`, deviceInfo);
+
+                // Update connected Subcos list
+                const deviceKey = `${deviceInfo.ip}_${deviceInfo.mac}`;
+                dashboardStatus.connectedSubcos.set(deviceKey, {
+                    ip: deviceInfo.ip,
+                    mac: deviceInfo.mac,
+                    version: deviceInfo.version,
+                    containerImageVersion: deviceInfo.containerImageVersion || 'unknown',
+                    availableImageVersions: deviceInfo.availableImageVersions || [],
+                    lastSeen: Date.now(),
+                    timestamp: new Date().toISOString()
+                });
+
+                console.log(`✅ Updated device status for ${deviceInfo.ip} (Image: ${deviceInfo.containerImageVersion || 'unknown'})`);
+            } catch (parseError) {
+                console.error('❌ Error parsing device status message:', parseError);
+                console.error('Raw message:', message.toString());
             }
         }
     } catch (error) {
@@ -158,6 +181,41 @@ const dockerServices = {
     }
 };
 
+// Dashboard status tracking
+let dashboardStatus = {
+    buco: {
+        status: 'active',
+        lastUpdatedTar: null,
+        lastUpdateTime: null,
+        version: '1.0.0',
+        imageVersions: []
+    },
+    subco: {
+        status: 'active',
+        lastUpdatedTar: null,
+        lastUpdateTime: null,
+        version: '1.0.0',
+        imageVersions: []
+    },
+    connectedSubcos: new Map() // Map to track connected Subcos with IP, MAC, version
+};
+
+// Helper function to clean up inactive Subcos
+function cleanupInactiveSubcos() {
+    const now = Date.now();
+    const TIMEOUT_MS = 90 * 1000; // 90 seconds timeout (3x the 30 second polling interval)
+
+    for (const [key, subco] of dashboardStatus.connectedSubcos) {
+        if (now - subco.lastSeen > TIMEOUT_MS) {
+            dashboardStatus.connectedSubcos.delete(key);
+            console.log(`🗑️ Removed inactive Subco: ${subco.ip}`);
+        }
+    }
+}
+
+// Run cleanup every minute
+setInterval(cleanupInactiveSubcos, 60 * 1000);
+
 // Routes
 
 // Upload Docker tar file and load/push images
@@ -182,6 +240,55 @@ app.post('/api/upload-docker-tar', uploadDockerTar.single('dockerTar'), async (r
 
         // Process the Docker tar file
         const dockerResult = await processDockerTarFile(req.file);
+
+        // Update dashboard status with tar file information and image versions
+        const updateTime = new Date().toISOString();
+        dashboardStatus.buco.lastUpdatedTar = req.file.filename;
+        dashboardStatus.buco.lastUpdateTime = updateTime;
+
+        // Extract and store image version information
+        if (dockerResult.loadedImages && dockerResult.loadedImages.length > 0) {
+            dashboardStatus.buco.imageVersions = dockerResult.loadedImages;
+
+            // Find specific service images and update their versions
+            dockerResult.loadedImages.forEach(imageName => {
+                if (imageName.includes('buco')) {
+                    dashboardStatus.buco.version = imageName;
+                } else if (imageName.includes('subco')) {
+                    dashboardStatus.subco.version = imageName;
+                }
+            });
+        }
+
+        // Update Subco status as well since they're updated together
+        dashboardStatus.subco.lastUpdatedTar = req.file.filename;
+        dashboardStatus.subco.lastUpdateTime = updateTime;
+
+        console.log('✅ Updated dashboard status with new tar file:', req.file.filename);
+        console.log('✅ Updated image versions:', dockerResult.loadedImages);
+
+        // Notify subcos about the new update with image version information
+        try {
+            const updateInfo = {
+                filename: req.file.filename,
+                timestamp: updateTime,
+                imageVersions: dockerResult.loadedImages,
+                versions: {
+                    bucoVersion: dashboardStatus.buco.version,
+                    subcoVersion: dashboardStatus.subco.version
+                }
+            };
+
+            mqttClient.publish('/newUpdate', JSON.stringify(updateInfo), (err) => {
+                if (err) {
+                    console.error('❌ Failed to publish update notification:', err);
+                } else {
+                    console.log('📤 Published update notification to subcos with image versions');
+                }
+            });
+        } catch (publishError) {
+            console.error('❌ Error publishing update notification:', publishError);
+        }
 
         res.json({
             message: 'Docker tar file uploaded and images processed successfully',
@@ -1033,31 +1140,7 @@ async function triggerWatchtowerUpdate() {
     }
 }
 
-// Function to update package.json with new versions
-async function updateBucoPackageJson(newSubcoVersion) {
-    try {
-        const packageJsonPath = path.join(__dirname, '../package.json');
 
-        // Read current package.json
-        const packageData = await fs.readJson(packageJsonPath);
-
-        // Update version tracking
-        packageData.subcoVersion = newSubcoVersion;
-
-        // Add last updated timestamp
-        packageData.lastUpdated = new Date().toISOString();
-
-        // Write back to package.json
-        await fs.writeJson(packageJsonPath, packageData, { spaces: 2 });
-
-        console.log(`Updated buco package.json with full package version: ${packageData.version}`);
-        console.log(`Service versions:`, packageData.serviceVersions);
-        return packageData;
-    } catch (error) {
-        console.error('Error updating package.json:', error);
-        throw error;
-    }
-}
 
 // Function to check MQTT connection status
 function getMqttStatus() {
@@ -1074,6 +1157,42 @@ function getMqttStatus() {
         }
     };
 }
+
+// Dashboard status API endpoint
+app.get('/api/dashboard-status', (req, res) => {
+    try {
+        // Convert connected Subcos Map to Array for JSON serialization
+        const connectedSubcosList = Array.from(dashboardStatus.connectedSubcos.values());
+
+        const response = {
+            timestamp: new Date().toISOString(),
+            buco: {
+                status: dashboardStatus.buco.status,
+                lastUpdatedTar: dashboardStatus.buco.lastUpdatedTar,
+                lastUpdateTime: dashboardStatus.buco.lastUpdateTime,
+                version: dashboardStatus.buco.version,
+                imageVersions: dashboardStatus.buco.imageVersions
+            },
+            subco: {
+                status: dashboardStatus.subco.status,
+                lastUpdatedTar: dashboardStatus.subco.lastUpdatedTar,
+                lastUpdateTime: dashboardStatus.subco.lastUpdateTime,
+                version: dashboardStatus.subco.version,
+                imageVersions: dashboardStatus.subco.imageVersions
+            },
+            connectedSubcos: connectedSubcosList,
+            mqtt: getMqttStatus()
+        };
+
+        res.json(response);
+    } catch (error) {
+        console.error('Error getting dashboard status:', error);
+        res.status(500).json({
+            error: 'Failed to get dashboard status',
+            details: error.message
+        });
+    }
+});
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {
